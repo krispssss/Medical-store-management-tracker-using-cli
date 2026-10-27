@@ -1,26 +1,8 @@
-"""
-Medical Store Management System (CLI Edition)
-=============================================
-Tracks medicine stock, expiry dates and sales/profit, with everything saved
-in plain, linked CSV files.
-
-Python 3.x, standard library only: csv, os, datetime
-
-Data structures : lists of lists (2D arrays), dictionaries (hash maps), tuples
-Core algorithms : step-by-step stock simulation (25% reorder threshold),
-                  Timsort with a custom key (expiry dates),
-                  in-memory hash join (Sales + Medicines -> revenue/profit)
-Persistence     : Medicines.csv, Batches.csv, Sales.csv
-                  (Medicine_Name is the main key / foreign key)
-"""
-
 import csv
 import os
 from datetime import datetime
 
-# --------------------------------------------------------------------------
-# CONSTANTS: file names, headers, thresholds
-# --------------------------------------------------------------------------
+
 MEDICINES_FILE = 'Medicines.csv'
 BATCHES_FILE = 'Batches.csv'
 SALES_FILE = 'Sales.csv'
@@ -29,18 +11,14 @@ MEDICINES_HEADER = ['Medicine_Name', 'Selling_Price', 'Cost_Price', 'Stock', 'Ma
 BATCHES_HEADER = ['Medicine_Name', 'Batch_No', 'Expiry_Date', 'Quantity', 'Status']
 SALES_HEADER = ['Medicine_Name', 'Sale_Date', 'Qty_Sold']
 
-# Minimum number of columns a row must have to be considered valid
+
 MIN_COLUMNS = {MEDICINES_FILE: 5, BATCHES_FILE: 5, SALES_FILE: 3}
 
-REORDER_PERCENT = 25          # stock below 25% of Max_Stock => must reorder
+REORDER_PERCENT = 25
 DATE_FORMAT = '%Y-%m-%d'
 
 
-# ==========================================================================
-# 3. FILE & STORAGE LAYER
-# ==========================================================================
 def setup_files():
-    """Create each CSV with its header row if it does not exist yet."""
     for filename, header in ((MEDICINES_FILE, MEDICINES_HEADER),
                              (BATCHES_FILE, BATCHES_HEADER),
                              (SALES_FILE, SALES_HEADER)):
@@ -50,25 +28,23 @@ def setup_files():
 
 
 def read_csv_rows(filename):
-    """Read a CSV into a list of lists. Skips the header and blank rows."""
     rows = []
     if not os.path.exists(filename):
         return rows
     need = MIN_COLUMNS.get(filename, 1)
     with open(filename, 'r', newline='', encoding='utf-8') as f:
         reader = csv.reader(f)
-        next(reader, None)                                   # skip header
+        next(reader, None)
         for row in reader:
             if not row or not any(field.strip() for field in row):
-                continue                                     # blank line
+                continue
             if len(row) < need:
-                continue                                     # damaged line
+                continue
             rows.append([field.strip() for field in row])
     return rows
 
 
 def write_csv_rows(filename, header, rows):
-    """Rewrite the whole file (header + all rows) in one go."""
     with open(filename, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow(header)
@@ -76,15 +52,10 @@ def write_csv_rows(filename, header, rows):
 
 
 def get_all_medicine_names():
-    """Column 0 of Medicines.csv."""
     return [row[0] for row in read_csv_rows(MEDICINES_FILE)]
 
 
-# --------------------------------------------------------------------------
-# Small input helpers (keep the menu layer safe from bad input)
-# --------------------------------------------------------------------------
 def read_int(prompt, low=None, high=None):
-    """Keep asking until the user types a valid integer in [low, high]."""
     while True:
         text = input(prompt).strip()
         try:
@@ -102,7 +73,6 @@ def read_int(prompt, low=None, high=None):
 
 
 def read_float(prompt, low=None):
-    """Keep asking until the user types a valid number >= low."""
     while True:
         text = input(prompt).strip()
         try:
@@ -117,7 +87,6 @@ def read_float(prompt, low=None):
 
 
 def choose_medicine(medicines):
-    """Show a numbered list of medicines; return the chosen index or None."""
     if not medicines:
         print("  No medicines registered yet. Add one first (option 1).")
         return None
@@ -127,11 +96,7 @@ def choose_medicine(medicines):
     return read_int("Choose medicine number: ", 1, len(medicines)) - 1
 
 
-# ==========================================================================
-# 2. LOGIC LAYER - medicines & stock
-# ==========================================================================
 def add_new_medicine():
-    """Register a new medicine (duplicate check ignores case)."""
     name = input("Medicine name: ").strip()
     if not name:
         print("  ! Name cannot be empty.")
@@ -152,12 +117,11 @@ def add_new_medicine():
 
 
 def receive_stock():
-    """Receive a new batch: adds a row to Batches.csv and raises Stock."""
     medicines = read_csv_rows(MEDICINES_FILE)
     idx = choose_medicine(medicines)
     if idx is None:
         return
-    selected = medicines[idx]                                # O(1) access
+    selected = medicines[idx]
     stock, max_stock = int(selected[3]), int(selected[4])
     room = max_stock - stock
     if room <= 0:
@@ -180,25 +144,17 @@ def receive_stock():
     batches.append([selected[0], batch_no, expiry, str(qty), 'Active'])
     write_csv_rows(BATCHES_FILE, BATCHES_HEADER, batches)
 
-    selected[3] = str(stock + qty)                           # edit in place
+    selected[3] = str(stock + qty)
     write_csv_rows(MEDICINES_FILE, MEDICINES_HEADER, medicines)
     print(f"  + Received {qty} unit(s) of {selected[0]}. Stock is now {selected[3]}.")
 
 
 def calculate_reorder_allowance(stock, max_stock):
-    """
-    Step-by-step simulation of the 25% reorder threshold.
-    Returns (units_or_negative_needed, pct, status).
-      >= 0 : units you can still sell before dropping below 25%
-      <  0 : units you must receive to get back to 25%
-    Uses integer comparisons (100*stock >= 25*max) so there are no
-    floating-point surprises right on the line.
-    """
     if max_stock == 0:
         return (0, 0.0, 'No capacity set')
     pct = (stock / max_stock) * 100
 
-    if 100 * stock >= REORDER_PERCENT * max_stock:           # Case A: safe zone
+    if 100 * stock >= REORDER_PERCENT * max_stock:
         sellable = 0
         temp_stock = stock
         while temp_stock > 0 and 100 * (temp_stock - 1) >= REORDER_PERCENT * max_stock:
@@ -208,7 +164,7 @@ def calculate_reorder_allowance(stock, max_stock):
             return (0, pct, 'At 25% threshold (reorder soon)')
         return (sellable, pct, f'Can sell {sellable} unit(s) before reorder')
 
-    needed = 0                                               # Case B: deficit zone
+    needed = 0
     temp_stock = stock
     while 100 * temp_stock < REORDER_PERCENT * max_stock:
         needed += 1
@@ -217,7 +173,6 @@ def calculate_reorder_allowance(stock, max_stock):
 
 
 def show_stock_report():
-    """Print every medicine with its stock %, allowance and status."""
     medicines = read_csv_rows(MEDICINES_FILE)
     if not medicines:
         print("  No medicines registered yet.")
@@ -230,11 +185,7 @@ def show_stock_report():
         print(f"{m[0]:<22}{stock:>8}{max_stock:>7}{pct:>9.1f}%  {status}")
 
 
-# ==========================================================================
-# 2. LOGIC LAYER - batches & expiry (Timsort)
-# ==========================================================================
 def parse_expiry(row):
-    """Sort key: expiry as datetime; broken dates go to the very end."""
     try:
         return datetime.strptime(row[2], DATE_FORMAT)
     except ValueError:
@@ -242,7 +193,6 @@ def parse_expiry(row):
 
 
 def get_active_batches_sorted():
-    """Active batches sorted by expiry (Timsort, stable, O(A log A))."""
     batches = read_csv_rows(BATCHES_FILE)
     active = [row for row in batches if row[4].strip().lower() == 'active']
     active.sort(key=parse_expiry)
@@ -250,7 +200,6 @@ def get_active_batches_sorted():
 
 
 def show_whats_expiring_soon():
-    """List active batches, earliest expiry first, with days left."""
     active = get_active_batches_sorted()
     if not active:
         print("  No active batches.")
@@ -274,11 +223,6 @@ def show_whats_expiring_soon():
 
 
 def dispose_batch():
-    """
-    Mark a batch as 'Disposed' and remove its units from stock.
-    Uses (idx, row) tuples so the real position in the full list is kept
-    even though the user only sees active batches.
-    """
     batches = read_csv_rows(BATCHES_FILE)
     active = [(idx, row) for idx, row in enumerate(batches)
               if row[4].strip().lower() == 'active']
@@ -289,7 +233,7 @@ def dispose_batch():
     for i, (_, row) in enumerate(active, 1):
         print(f"  {i}. {row[0]} | Batch {row[1]} | Exp {row[2]} | Qty {row[3]}")
     choice = read_int("Choose batch to dispose: ", 1, len(active))
-    target_idx = active[choice - 1][0]                       # original index
+    target_idx = active[choice - 1][0]
 
     med_name = batches[target_idx][0]
     try:
@@ -308,11 +252,7 @@ def dispose_batch():
     print(f"  - Batch disposed. {qty} unit(s) of {med_name} removed from stock.")
 
 
-# ==========================================================================
-# 2. LOGIC LAYER - sales, grouping and hash join
-# ==========================================================================
 def record_sale():
-    """Sell units of a medicine: validates stock, updates both files."""
     medicines = read_csv_rows(MEDICINES_FILE)
     idx = choose_medicine(medicines)
     if idx is None:
@@ -339,7 +279,6 @@ def record_sale():
 
 
 def show_all_sales():
-    """Group sales by medicine with a dictionary in a single O(G) pass."""
     sales = read_csv_rows(SALES_FILE)
     if not sales:
         print("  No sales recorded yet.")
@@ -350,7 +289,7 @@ def show_all_sales():
             q = int(qty)
         except ValueError:
             continue
-        grouped.setdefault(name, []).append((sale_date, q))   # tuple per sale
+        grouped.setdefault(name, []).append((sale_date, q))
 
     for name, entries in grouped.items():
         total = sum(q for _, q in entries)
@@ -360,12 +299,6 @@ def show_all_sales():
 
 
 def calculate_sales_stats():
-    """
-    O(S + G) hash join between Sales.csv and Medicines.csv.
-    Step 1: sub_sales = {name: total_qty}      (one pass over G sales)
-    Step 2: loop over S medicines, O(1) lookup of qty sold.
-    Returns (revenue, profit, units_sold, per_medicine_list).
-    """
     sub_sales = {}
     for row in read_csv_rows(SALES_FILE):
         try:
@@ -380,7 +313,7 @@ def calculate_sales_stats():
     per_med = []
     for m in read_csv_rows(MEDICINES_FILE):
         qty = sub_sales.get(m[0].lower(), 0)
-        if qty == 0:                      # unsold medicines are left out
+        if qty == 0:
             continue
         sell, cost = float(m[1]), float(m[2])
         rev = qty * sell
@@ -408,11 +341,7 @@ def show_sales_stats():
     print("(Revenue uses each medicine's current selling/cost price.)")
 
 
-# ==========================================================================
-# 2. LOGIC LAYER - dashboards
-# ==========================================================================
 def medicine_deep_dive():
-    """Everything about one medicine: stock, batches, sales."""
     medicines = read_csv_rows(MEDICINES_FILE)
     idx = choose_medicine(medicines)
     if idx is None:
@@ -447,7 +376,6 @@ def medicine_deep_dive():
 
 
 def show_morning_dashboard():
-    """Low-stock medicines, 3 nearest expiries and current profit."""
     print("\n========== MORNING DASHBOARD ==========")
 
     print("\n[Medicines below 25% stock]")
@@ -475,9 +403,6 @@ def show_morning_dashboard():
           f"| Profit Rs. {profit:.2f}")
 
 
-# ==========================================================================
-# 1. MENU & CLI LAYER
-# ==========================================================================
 def print_menu():
     print("""
 ================ MEDICAL STORE MANAGER ================
